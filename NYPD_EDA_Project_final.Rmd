@@ -1,0 +1,390 @@
+---
+title: "NYPD Shooting Incident Analysis"
+author: "B. Warlum"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```  
+# Introduction
+
+This report demonstrates exploratory data analysis of the NYPD Shooting Incident (Historical) data set from the data.gov website. In this report, I aimed to explore patterns in the shooting/homicide incidents over time, the age and race demographics of the shooting/homicide victims, and victim demographic factors that are significant predictors of a homicide in a shooting incident. Exploring the data, I hope to gain insight into: 
+
+1. Do we see an overall trend in shooting/homicide incidents over time?
+
+2. Is there a demographic group of the victims being disproportionately affected?
+
+3. Which demographic factors are significant predictors of a shooting incident resulting in homicide?
+  
+## Importing Data Set and Libraries needed
+```{r warning = FALSE, message = FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(knitr)
+library(tidymodels)
+
+#Importing Data Set
+nypd_Data <- read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD") 
+
+```
+## Summary of Raw Data
+```{r}
+#Summary of Raw data Set
+summary(nypd_Data)
+```  
+  The data set contains 29,744 shooting incident reports from the NYPD Police Department. Data collected for each incident includes variables such as; unique incident key, date and time of incident, jurisdiction/precinct the incident occurred in, which borough the incident was in, and descriptive/demographic variables about the location and of the perpetrators/victims in each incident. We see within the summary most of the data is classed as character. For my analysis I will only be using a select few variables and the rest of the variables will be filtered out.    
+
+
+## Cleaning and Tidying the Data 
+
+To perform my analysis I filtered out all variables except INCIDENT_KEY, OCCUR_DATE, BORO, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, and STATISTICAL_MURDER_FLAG. I then transformed my selected variables into readable form and into the appropriate data types.
+  
+```{r}
+
+nypd_Data_Cleaned <- nypd_Data %>%
+  
+   #Re factoring variables for appropriate spelling/aesthetics
+  rename(
+    incident_key = INCIDENT_KEY,
+    date = OCCUR_DATE,
+    borough = BORO,
+    victim_age = VIC_AGE_GROUP,
+    victim_sex = VIC_SEX,
+    victim_race = VIC_RACE,
+    murder_flag = STATISTICAL_MURDER_FLAG
+  ) %>%
+
+  #Selecting VARIABLES to perform analysis on 
+  select(incident_key,date, borough, victim_age, victim_race, victim_sex, murder_flag) %>%
+  
+  #Changing variables to appropriate data types
+  mutate(
+    incident_key = as.character(incident_key),
+    date = mdy(date),
+    borough = as.factor(borough),
+    victim_age = factor(victim_age, levels = c("<18", "18-24", "25-44", "45-64", "65+")),
+    victim_race = as.factor(victim_race), 
+    victim_sex = as.factor(victim_sex),
+    murder_flag = as.logical(murder_flag)) %>%
+  
+   #Ordering data by ascending order
+    arrange(date)
+```  
+## Summary of Cleaned/Missing Data
+
+```{r}
+#Displaying a general summary of variables chosen for analysis
+summary(nypd_Data_Cleaned)
+```  
+Examining the summary, the data set shows shooting incident reports from January 1st, 2006 to December 31, 2024. Each variable did not have any missing values but did have observations labeled as "U" or "UNKNOWN" and one data entry error labeled as "1022". These values could have been labeled as "U" or "UNKNOWN" due to the inability of an officer to gather appropriate data on victims due to on scene conditions. One thought could be, the officers being unable to identify a victim appropriately on scene due to the gruesome nature, or the victim not having an appropriate identification license on them at the time. Ultimately, I decided to filter those observations and the data entry error since there were so few and they would have a negligible impact on the results. After examining victim_sex variable, I decided to leave this out in my analysis since it is skewed heavily toward males, accounting for about 90% of all shooting victims. Doing so would limit the ability of my visualizations and model to generalize predictions across demographic groups and could introduce bias toward male victim outcomes. 
+  
+```{r include = FALSE}
+#Creating a fully cleaned/filtered df 
+nypd_Data_Cleaned_filtered <- nypd_Data_Cleaned %>%
+  
+  #Filtering out the error and UNKNOWN's
+  filter(victim_age != "1022") %>%
+  filter(victim_age != "UNKNOWN") %>%
+  filter(victim_race != "UNKNOWN") 
+
+```  
+
+```{r include = FALSE}
+
+#Analyzing "Duplicates" in the data
+head(nypd_Data_Cleaned[duplicated(nypd_Data_Cleaned)|duplicated(nypd_Data_Cleaned, fromLast = TRUE), ])
+
+```  
+
+## Visualizations
+
+### Shooting and Homicides Incidents Over Time   
+```{r}
+
+#Creating a df for true total# of incidences
+total_incidents <- nypd_Data_Cleaned_filtered %>%
+  
+  #Grouping by incidences that share duplicate incident keys, then counting only the first row
+  #Aimed to avoid over counting incidences
+  group_by(incident_key) %>%
+  slice_head(n = 1) %>%
+  ungroup(incident_key) %>%
+  
+  #Ordering by year and plotting 
+  mutate(year = floor_date(date, "year"))%>%
+  count(year) %>%
+  
+  #Creating a column to count total # of incidents 
+  mutate(type = "Shooting")
+
+#Creating a df for total # of homicide incidents
+homicide_incidents <- nypd_Data_Cleaned_filtered %>%
+  
+  #Creating a column to count total # of homicide incidents
+  filter(murder_flag == TRUE) %>%
+  
+  #Grouping by homicide incidences that share duplicate incident keys, then counting only the first row
+  #Wanted to only count homicide incident vs # of homicide victims
+  group_by(incident_key) %>%
+  slice_head(n = 1) %>%
+  ungroup(incident_key) %>%
+  
+  mutate(year = floor_date(date, "year"))%>%
+  count(year) %>%
+  mutate(type = "Homicide")
+
+#Plotting both lines
+  bind_rows(total_incidents, homicide_incidents) %>%
+  ggplot(aes(x = year, y = n)) + geom_line(aes(color = type)) +
+  geom_point(aes(color = type)) + 
+  scale_x_date(date_breaks = "2 year",limits = c(as.Date("2005-01-01"), as.Date("2024-12-31")), date_labels = "%Y") + scale_y_continuous(breaks = seq(200,1600,200)) +
+  theme_light() + 
+  labs(title = "Shooting and Homicide Incidents Over Time", x = "Year", y = "Total Number", color = "Type of Incident")
+
+```    
+```{r include = FALSE}
+
+#Verifying grouping/un-grouping worked
+length(nypd_Data$INCIDENT_KEY)
+length(unique(nypd_Data_Cleaned$incident_key))
+length(nypd_Data_Cleaned$incident_key)
+
+```
+
+**Shooting and Homicide Incidents Analysis**: 
+
+Examining the graph we see a decreasing trend in the number of shooting incidences and homicide incidences until 2019. Then from 2019 to 2021 we see an uptick in the number of shooting and homicide incidences following each others trend. We do not have enough data to infer causality in this increase. However, we know during that time there were factors that may have influenced our data such as the Covid-19 pandemic, increase in social unrest due to societal issues, and economic influence from the impacts of the pandemic shutdown. After a peak in incidences in 2021, we then see the number of both types of incidences follow each other in a downward trend. 
+
+### Demographics of Victims
+```{r fig.width = 12, fig.height = 6}
+  
+  #Creating rows with shooting victims
+  shooting_victims <- nypd_Data_Cleaned_filtered %>%
+
+  #Creating a column to count total # of shooting victims
+  mutate(type = "Shooting Victims")
+
+  #Creating rows with only homicide victims
+  homicide_victims <- nypd_Data_Cleaned_filtered %>%
+  
+  #Filtering for incident where murder = TRUE 
+  filter(murder_flag == TRUE) %>%
+  
+  #Creating a column to count total # of shooting victims
+  mutate(type = "Homicide Victims")
+  
+  #Binding rows together and then plotting
+  bind_rows(shooting_victims, homicide_victims) %>%
+  mutate(type_ordered = factor(type, levels = c("Shooting Victims", "Homicide Victims"))) %>%
+ ggplot(aes(borough, fill = victim_age)) + 
+  geom_bar(position = "dodge") + 
+  scale_y_continuous(breaks = seq(0,7000,1000)) +
+  theme_light() +
+    facet_wrap(~type_ordered) +
+  labs(title = "Victims Age Demographics by Borough", x = "Borough", y = "Victims", fill = "Victims Age Group")
+```  
+```{r}
+
+#Showing breakdown of each race concentration percentage in shooting victims by borough
+nypd_Data_Cleaned_filtered %>%
+  count(borough) %>%
+  mutate(percentage = (n/sum(n) * 100)) %>%
+  group_by(borough) %>%
+  ungroup() %>%
+  kable(caption = "Number of Shooting Incident Victims by Borough")
+
+```  
+```{r}
+
+#Showing breakdown of each race concentration percentage in homicide victims by borough
+nypd_Data_Cleaned_filtered %>%
+  filter(murder_flag == TRUE) %>%
+  count(victim_age) %>%
+  mutate(percentage = (n/sum(n) * 100)) %>%
+  group_by(victim_age) %>%
+  ungroup() %>%
+  kable(caption = "Number of Homicide Incident Victims by Borough")
+
+```  
+
+**Victims Age and Borough Analysis**:
+
+Reviewing the data from the graph and table we see Victims in both types of incidents accounted for the majority of the data. Based on the graph and the tables breakdown of the victims demographics we see 18-24 and 25-44 age groups were disproportionately affected where <18, 45-64, and 65+ age groups were not. Adding the percentages for the Bronx and Brooklyn, we see they account for about 69% of the total shooting victims between all boroughs. Looking at homicide victims age groups, again we see 18-24 and 25-44 age groups were mainly affected compared to the other age groups. Those age groups accounted for around 82% of the total homicide victims. There could be many reasons we are seeing this result. For example, we do not know the total population breakdown of each borough or if those boroughs are places where younger people tend to reside. Unfortunately there is not enough data to deduce the reasoning behind these specific age groups being disproportionately affected but if population data for each borough was included this could strengthen the analysis.
+
+
+  
+### Victim Race Demographics
+```{r fig.width = 12, fig.height = 6}
+#Creating rows with shooting victims race data
+shooting_vic_race <- nypd_Data_Cleaned_filtered %>%
+  
+  count(borough, victim_race) %>%
+  mutate(type = "Shooting Victims")
+
+#Creating rows with homicide victims race data
+homicide_vic_race <- nypd_Data_Cleaned_filtered %>%
+  
+  filter(murder_flag == TRUE) %>%
+  count(borough, victim_race) %>%
+  mutate(type = "Homicide Victims")
+
+#Binding rows together then plotting
+bind_rows(shooting_vic_race, homicide_vic_race) %>%
+  mutate(type_ordered = factor(type, levels = c("Shooting Victims", "Homicide Victims"))) %>%
+ggplot(aes(x = borough, y = victim_race, fill = n)) + 
+  geom_tile() +
+  theme_classic() +
+  scale_fill_gradient(low = "blue", high = "yellow") +
+  facet_wrap(~type_ordered) +
+  labs(title = "Homicide vs Shooting Victims by Race", x = "Borough", y = "Race", fill = "# of Victims")
+``` 
+```{r}
+
+#Showing breakdown of each race concentration percentage in shooting victims by borough
+nypd_Data_Cleaned_filtered %>%
+  count(victim_race) %>%
+  mutate(percentage = (n/sum(n) * 100)) %>%
+  kable(caption = "Number of Shooting Victims by race")
+
+```  
+
+```{r}
+
+#Showing breakdown of each race concentration percentage in homicide victims by borough
+nypd_Data_Cleaned_filtered %>%
+  filter(murder_flag == TRUE) %>%
+  count(victim_race) %>%
+  mutate(percentage = (n/sum(n) * 100)) %>%
+  kable(caption = "Total Number of Homicide Victims by race")
+
+```  
+
+
+**Homicide and Shooting Victim's Race Analysis**:
+
+Analyzing the data we see Black victims were the majority of shooting and homicide victims. The heat map indicates that across all boroughs, most notably within Bronx and Brooklyn, Black victims had the heaviest concentration. The tables further support this as Black victims accounted for 70.82% of all shooting victims and 69.44% of homicide victims. We also see White victims, Asian/Pacific Islander victims, and American Indian/Alaskan native victims were affected the least. If we are to trust this data to hold true and representative of shooting/homicide incidents, then this indicates Black victims are disproportionately victimized regardless of incident type and borough compared to other race victims. Again there are limitations to this. We do not know the proportion of each race in each boroughs total population.   
+
+## Logistic Regression Model
+
+For my model, I wanted to find which variables influence the probability of a shooting incident resulting in a homicide. To achieve this, I used a binomial logistic regression model since the dependent variable murder_flag is binary (TRUE or FALSE). To start, I ran the model with my previously selected demographic variables (victim_age, victim_race, borough) to determine which of these predictors indicated statistical significance.
+
+Since Black victims had the highest number of observations I decided to use them as a reference level. This helped make the model's coefficients interpretable by comparing all the other samples of a victims race group against the highest sample size. I also excluded The American Indian/Alaskan Native victim race group from the logistic regression model due to having fewer than 20 samples and only represented .04% of the data set. Including this race group with this few of observations would cause a separation in the model and the algorithm would not be able to find a stable maximum likelihood estimator for that coefficient. This would result in an artificially inflated standard error and destabilize the victim race predictor as a whole. 
+```{r}
+nypd_Data_Cleaned_filtered %>% 
+  count(victim_race) %>%
+  mutate(percentage = n/sum(n) * 100) %>%
+  kable(caption = "Number/Percentage of victims by race")
+```
+
+```{r}
+
+#Excluding American Indian/Alaskan Native due to few observations
+model_data<- nypd_Data_Cleaned_filtered %>%
+  filter(victim_race != "AMERICAN INDIAN/ALASKAN NATIVE") %>%
+  mutate(victim_race = droplevels(victim_race)) %>%
+  
+#Grouping at the incident level 
+  group_by(incident_key) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+
+#Setting reference level to Black victims due to having largest # of observations
+  mutate(victim_race = relevel(victim_race, ref = "BLACK"))
+
+#Logistic regression Model
+
+#Finding statistically significant predictors
+model <-  glm(murder_flag ~ victim_age + victim_race + borough, family = binomial, data = model_data)
+
+model %>%
+  summary() %>%
+  coef() %>%
+  as.data.frame() %>%
+  mutate(Odds_Ratio = exp(Estimate)) %>%
+  kable(caption = "Logistic Regression Summary", digits = 3)
+
+#Testing victim_race significance against model with no victim_race
+model_no_race <- glm(murder_flag ~ victim_age + borough, 
+                     family = binomial, data = model_data)
+
+anova(model_no_race, model, test = "Chisq") %>%
+  as.data.frame() %>%
+  kable(caption = "Likelihood Ratio Test Effect of Victim Race")
+
+```  
+As shown by the logistic regression summary, all groups within victim_age indicated high statistical significance. Performing a likelihood ratio test, victim's race as a whole is a statistically significant predictor (p = 4.65e-05) of homicide. The model clearly shows increasing odds of homicide with age, notably older victims (45-64 and 65+) being disproportionately affected. When compared against Black victims, Black Hispanic victims have significantly lower odds (17% lower) of homicide. White victims on the other hand have significantly higher odds (41% higher) of homicide. Furthermore, White Hispanic, Asian/Pacific Islander victims, and borough were not statistically significant predictors of homicide.
+
+```{r message = FALSE}
+#Plotting with predictions
+
+#Setting seed for reproducibility
+set.seed(1234)
+
+#Using tidymodels to split data for training/testing
+split_data <- initial_split(model_data, prop = .80)
+training_data <- training(split_data)
+testing_data <- testing(split_data)
+
+#Refit model on training data only 
+model <- glm(murder_flag ~ victim_age + victim_race + borough, family = binomial, data = training_data)
+
+#Calculating predicted probabilities using model
+nypd_Data_pred <- testing_data %>% 
+  mutate(pred = predict(model, newdata = ., type = "response")) %>%
+  group_by(victim_age, victim_race, borough) %>%
+  summarize(pred = mean(pred), .groups = "drop")
+
+#Displaying Model
+print(nypd_Data_pred %>% 
+  ggplot(aes(x = victim_age, y = pred, group = victim_race, color = victim_race)) + 
+    geom_point() +  
+    geom_line()  + 
+    facet_wrap(~borough, ncol = 3) + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust =1)) +
+    labs(title = "Probability of Shooting Incident Resulting in Homicide by Demographics", x = "Age Group", y = "Probability", color = "Victim Race")) 
+
+```  
+
+**Logistic Regression Model Analysis**:
+
+Observing the model's output, the plot clearly shows an upward trend in predicted probability of a shooting resulting in a homicide as a victim's age increases. A victim's age is a statistically significant predictor as shown by the logistic regression. Older victims have a higher probability of a homicide whereas younger victims had a lower probability. A victim's race also shows separation across age groups. White victims have the highest probability of homicide whereas Black Hispanic victims have the lowest consistent with the model's findings. Borough as a predictor shows little separation across the panels, being consistent with it not being a statistically significant predictor of homicide. Limitations of this model include some boroughs having scarce data for certain victim age and race groups resulting in shorter prediction lines. 
+
+Note: These findings do not contradict the visualization analysis. Black victims account for the majority of shooting and homicide victims by raw count. However, the logistic regression measures the probability of a homicide in a shooting incident. On that measure, White victims have a higher probability of a shooting incident resulting in homicide.  
+
+## Possible Sources of Bias
+The most important sources of bias I have identified are: 
+
+1. Variables chosen for analysis vs ones excluded
+
+By focusing solely on victim demographics and leaving out perpetrator demographics, victim's sex, and location data, I am leaving out other sides of the story. As a result, this has left out analyzing the demographics of perpetrators and being able to identify if certain perpetrator demographic groups engage in shootings. Excluding victim's sex leaves out demographics attributed to male vs female victims. Also excluding location variables could have led to overestimating the concentration of shooting incidents in certain boroughs.
+  
+2. Filtering unknown observations in the data
+
+Choosing to filter out observations labeled "U" or "UNKNOWN" under victim_age and victim_race we lose those observations value in relation to other variables. Some unknown values were clustered on certain days and shared similar incident keys. Digging deeper into these we could determine if these values recorded are affecting certain demographic groups resulting in the model being less accurate for those groups. 
+  
+3. Unreported Incidents
+
+In this report we are given shooting incidents that were reported and the data associated with them. We do not have a clear picture of systemic factors on reporting shooting incidents. Certain borough communities might have a higher propensity to report crimes in general leading to a higher number of shooting incident reports. Other borough communities might not have the same willingness to report shooting incidents or crimes in general. In turn this could affect the results of the analysis and not have a representative conclusion overall.
+  
+4. Institutional Bias
+
+Within these shooting incident reports, we are relying on officer's ability and level of personal bias to record the data. For example, a certain demographic of officer and bias could affect which demographic information of perpetrators or victims is recorded and to what frequency. This could extend to how the incidences are classified or how many are recorded in general. 
+
+5. Personal Bias 
+
+My personal demographics could have influenced the questions I addressed in this analysis, leading me to focus on victim demographics to gain insight on the disproportionate effect within shooting incidents. It could also have influenced my choice in visualizations specifically the heat map. On the other hand, my choices could have given valuable insight to recognizing victim demographics who are being disproportionately affected.
+
+## Mitigating Bias  
+
+To mitigate my personal bias I could have included a more diverse perspective by choosing to include more variables such as the perpetrators data to give a complete story. Instead of asking questions that I personally want to explore, I could let the data guide me to natural questions that arise. Categorizing the unknown values in their own category could have also added a diverse perspective. Further investigation into each borough's population demographics could also explain why we see certain demographics are being represented as being disproportionately affected. 
+
+## Conclusion  
+
+This exploratory analysis showed shooting and homicide incidents over time were overall in a downward trend. The analysis confirmed certain demographics were disproportionately affected. The analysis showed victims' age groups 18-24 and 25-44 as well as Black victims were disproportionately affected within shooting and homicide incidents. After running logistic regression, victim's age and race were both statistically significant variables in predicting an increased probability of homicide in a shooting incident. We also found White victims had 41% higher odds of a homicide whereas Black Hispanic victims had 17% lower odds when compared to Black victims. In total the data provides a comprehensive overview of shooting incidents but has some limitations due to lack of data and bias. For example, including reports from years before 2006 could overall strengthen the findings and model's predictive ability. All in all, this exploratory data analysis provided key insights into the victims of shooting incidents and those demographics most affected in aims to positively influence public safety and future research.
+```{r}
+sessionInfo()
+```
